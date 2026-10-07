@@ -8,5 +8,7 @@ public enum LossReason {
     TEMP_ABUSE,         // 温控异常报损
     SHRINKAGE,          // 盘点盘亏
     JAM_DAMAGED,        // 卡货损坏
-    REFUND_NO_RETURN    // 退款但商品未收回
+    REFUND_NO_RETURN,   // 退款但商品未收回
+    LOSS_MISSED,        // 报损漏记（差异调查确认的实际损耗）
+    RECOGNITION_MISS    // 识别漏单（用户拿走未出单）
 }

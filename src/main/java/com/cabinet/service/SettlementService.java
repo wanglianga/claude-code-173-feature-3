@@ -59,8 +59,14 @@ public class SettlementService {
 
         int totalSold = 0, totalLoss = 0;
         BigDecimal soldCostSum = BigDecimal.ZERO, lossCostSum = BigDecimal.ZERO;
+        List<String> frozenSkipped = new ArrayList<>();
 
         for (ProductBatch batch : batches) {
+            // 盘点差异未查清：仅跳过被冻结的相关批次，其他批次照常结算/对账
+            if (batch.isSettlementFrozen()) {
+                frozenSkipped.add(batch.getBatchNo());
+                continue;
+            }
             // 真实售卖：周期内订单明细（按批次），扣除整单退款数量
             int soldQty = 0;
             BigDecimal soldCost = BigDecimal.ZERO;
@@ -79,12 +85,13 @@ public class SettlementService {
                 soldCost = soldCost.add(unitCost.multiply(BigDecimal.valueOf(netSold)));
             }
 
-            // 供应商责任报损
+            // 供应商责任报损（改判冲销的报损不再计入）
             int lossQty = 0;
             BigDecimal lossCost = BigDecimal.ZERO;
             for (LossRecord lr : lossRepository.findByBatchIdOrderByIdAsc(batch.getId())) {
                 LocalDateTime t = lr.getCreatedAt();
                 if (t.toLocalDate().isBefore(start) || t.toLocalDate().isAfter(end)) continue;
+                if (lr.isReversed()) continue;
                 if ("SUPPLIER".equals(lr.getLiability())) {
                     lossQty += lr.getQty();
                     lossCost = lossCost.add(lr.getCostAmount() != null
@@ -121,6 +128,10 @@ public class SettlementService {
         sb.setSoldCost(soldCostSum);
         sb.setLossCost(lossCostSum);
         sb.setPayableAmount(soldCostSum.subtract(lossCostSum));
+        if (!frozenSkipped.isEmpty()) {
+            sb.setRemark("以下批次因盘点差异调查冻结，本周期暂不结算/对账: "
+                    + String.join(", ", frozenSkipped));
+        }
         return settlementRepository.save(sb);
     }
 

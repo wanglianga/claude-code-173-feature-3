@@ -42,4 +42,14 @@ public class ProductBatch extends BaseEntity {
     @Enumerated(EnumType.STRING)
     @Builder.Default
     private BatchStatus status = BatchStatus.IN_STOCK;
+
+    /**
+     * 盘点差异未查清期间，仅冻结“相关批次”的补货结算与供应商对账：
+     * settlementFrozen=true 的批次不进入结算单生成，其他商品/批次照常结算。
+     */
+    @Builder.Default
+    private boolean settlementFrozen = false;
+
+    /** 冻结该批次结算的差异单（留痕，解冻时清空） */
+    private Long frozenByDiscrepancyId;
 }

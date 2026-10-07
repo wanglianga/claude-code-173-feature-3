@@ -47,4 +47,11 @@ public class LossRecord extends BaseEntity {
     private Long bizId;
 
     private String remark;
+
+    /** 差异改判冲销：被冲销的报损不再计入供应商结算/责任口径 */
+    @Builder.Default
+    private boolean reversed = false;
+
+    /** 冲销该报损的差异单号 */
+    private String reversedByDiscrepancyNo;
 }

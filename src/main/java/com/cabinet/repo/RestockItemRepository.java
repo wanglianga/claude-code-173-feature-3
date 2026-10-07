@@ -7,4 +7,5 @@ import java.util.List;
 
 public interface RestockItemRepository extends JpaRepository<RestockItem, Long> {
     List<RestockItem> findByRestockOrderId(Long orderId);
+    List<RestockItem> findByBatchIdOrderByIdAsc(Long batchId);
 }

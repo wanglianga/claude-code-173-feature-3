@@ -24,6 +24,14 @@ public class AppUser extends BaseEntity {
 
     private String displayName;
 
+    /** 补货员评分（满分 100，差异确认补货员责任时扣分） */
+    @Builder.Default
+    private Integer score = 100;
+
+    /** 补货员待结算/已确认的责任数量（补货结算口径，差异确认后累加） */
+    @Builder.Default
+    private Integer liabilityQty = 0;
+
     @Builder.Default
     private boolean enabled = true;
 }
