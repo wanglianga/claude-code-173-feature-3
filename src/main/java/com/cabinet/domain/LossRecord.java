@@ -46,5 +46,12 @@ public class LossRecord extends BaseEntity {
     private String bizType;
     private Long bizId;
 
+    /** 是否已被差异改判冲销（true 时不再计入结算/损耗统计，原记录保留留痕） */
+    @Builder.Default
+    private boolean voided = false;
+
+    /** 冲销原因/改判单号说明 */
+    private String voidRemark;
+
     private String remark;
 }

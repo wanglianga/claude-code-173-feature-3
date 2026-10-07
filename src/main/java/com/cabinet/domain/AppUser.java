@@ -24,6 +24,10 @@ public class AppUser extends BaseEntity {
 
     private String displayName;
 
+    /** 补货员评分（初始 100，差异责任确认扣分，改判无责回补） */
+    @Builder.Default
+    private Integer scorePoints = 100;
+
     @Builder.Default
     private boolean enabled = true;
 }

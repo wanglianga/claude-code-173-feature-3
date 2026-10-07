@@ -33,6 +33,8 @@ public class RestockService {
     private final ChannelStockRepository stockRepository;
     private final BatchLedgerService ledgerService;
     private final AlertService alertService;
+    private final com.cabinet.repo.DiscrepancyOrderRepository discrepancyOrderRepository;
+    private final com.cabinet.repo.DiscrepancyFollowUpRepository discrepancyFollowUpRepository;
 
     @Transactional
     public RestockOrder arrive(String cabinetNo, String replenisherUsername,
@@ -179,7 +181,42 @@ public class RestockService {
         order.setStatus(mismatch ? RestockStatus.COMPLETED_MISMATCH : RestockStatus.COMPLETED);
         order.setCompletedAt(LocalDateTime.now());
         if (remark != null) order.setRemark(remark);
-        return restockOrderRepository.save(order);
+        RestockOrder saved = restockOrderRepository.save(order);
+
+        // 跨班次补货接回：本补货单涉及的批次若已有差异核查单（含已结单），
+        // 一律把本次补货挂回原差异单，保证后续改判能看到补货时间、数量、班次与照片
+        linkToDiscrepancies(saved, items);
+        return saved;
+    }
+
+    private void linkToDiscrepancies(RestockOrder order, List<RestockItem> items) {
+        for (RestockItem item : items) {
+            if (item.getBatch() == null) continue;
+            List<DiscrepancyOrder> dcs =
+                    discrepancyOrderRepository.findByBatchIdOrderByCreatedAtDesc(item.getBatch().getId())
+                            .stream()
+                            .filter(d -> d.getCabinet() != null
+                                    && d.getCabinet().getId().equals(order.getCabinet().getId()))
+                            .toList();
+            for (DiscrepancyOrder dc : dcs) {
+                boolean exists = discrepancyFollowUpRepository
+                        .findByDiscrepancyIdOrderByCreatedAtAsc(dc.getId()).stream()
+                        .anyMatch(f -> f.getType() == com.cabinet.domain.enums.FollowUpType.RESTOCK_CROSS_SHIFT
+                                && order.getOrderNo().equals(f.getRefNo()));
+                if (exists) continue;
+                discrepancyFollowUpRepository.save(DiscrepancyFollowUp.builder()
+                        .discrepancy(dc)
+                        .type(com.cabinet.domain.enums.FollowUpType.RESTOCK_CROSS_SHIFT)
+                        .refNo(order.getOrderNo())
+                        .photoUrls(item.getPhotoUrl())
+                        .qtyChange(item.getQty())
+                        .submittedBy(order.getReplenisher())
+                        .happenedAt(LocalDateTime.now())
+                        .remark("跨班次补货完成接回：货道 " + item.getActualChannelCode()
+                                + " 申报 " + item.getQty() + " 件")
+                        .build());
+            }
+        }
     }
 
     @Transactional(readOnly = true)

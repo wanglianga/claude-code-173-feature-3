@@ -31,6 +31,7 @@ public class StocktakeService {
     private final BatchLedgerService ledgerService;
     private final AlertService alertService;
     private final ChannelRepository channelRepository;
+    private final com.cabinet.repo.DiscrepancyOrderRepository discrepancyOrderRepository;
 
     @Transactional
     public StocktakeOrder create(String cabinetNo, String operatorUsername) {
@@ -99,6 +100,10 @@ public class StocktakeService {
                 .orElseThrow(() -> ApiException.notFound("盘点单不存在"));
         if (order.getStatus() != StocktakeStatus.PENDING_ADJUST) {
             throw ApiException.conflict("盘点单无待调整差异");
+        }
+        // 已立案差异核查的盘点单，差异由核查单按证据拆分定责，禁止再走一刀切盘亏，避免重复扣减
+        if (!discrepancyOrderRepository.findByStocktakeId(order.getId()).isEmpty()) {
+            throw ApiException.conflict("该盘点单差异已立案核查，请在差异核查单中拆分定责，不再执行整单调整");
         }
         List<StocktakeItem> items = itemRepository.findByStocktakeId(order.getId());
         for (StocktakeItem item : items) {

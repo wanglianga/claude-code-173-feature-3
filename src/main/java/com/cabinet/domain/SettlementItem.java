@@ -32,6 +32,11 @@ public class SettlementItem extends BaseEntity {
     @Column(precision = 14, scale = 2)
     private BigDecimal lossCost;
 
+    /** 差异核查产生的供应商对账调整（正=补付 ADD，负=扣减 DEDUCT） */
+    @Column(precision = 14, scale = 2)
+    @Builder.Default
+    private BigDecimal reconAmount = BigDecimal.ZERO;
+
     @Column(precision = 14, scale = 2)
     private BigDecimal payableAmount;
 }

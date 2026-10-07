@@ -17,6 +17,9 @@
 | 临期未及时下架 | 每日 02:10 定时扫描（可手动触发）生成临期/过期下架单与告警；执行下架后报废记报损 |
 | 放错货道 | 上架时校验货道计划商品，不一致记 `WRONG_CHANNEL` 告警，补货单完成态为 `COMPLETED_MISMATCH` |
 | 盘点库存不符 | 盘点单生成系统快照 → 录入实盘 → 差异审批调整：盘亏记报损（SHRINKAGE），台账 ADJUST_MINUS/PLUS |
+| 盘点差异核查（四瓶去哪了） | 差异核查单汇聚**补货前后库存、补货照片、销售订单、开门记录、报损记录、温控曲线**；按发生时间+证据把差异逐瓶拆分为多条定责（销售未扣减/补货少放/报损漏记/识别漏单/温控损耗），无法确认的挂起复核；未查清只冻结**相关批次**结算与供应商对账，其他商品照常结算 |
+| 差异责任分流 | 补货员责任 → 结算扣罚+评分；供应商责任 → 账单对账调整；识别漏单/未扣减 → 算法样本回流；温控异常 → 食品安全先行处置（隔离/报废/复检/召回，不等追责结束） |
+| 改判与事后接回 | 补传照片、重复盘点、跨班次补货、已结算订单全部接回原差异单；改判作废原分摊并冲销库存/台账/报损/罚则（已核销则下期反向调整），每一次数量与责任变化留痕 |
 | 用户误扣款 | 投诉单关联开门会话；客服证据回放后按整单/按行退款；商品收回回补库存（REFUND_RETURN），未收回记报损（REFUND_NO_RETURN） |
 | 按点位调品类 | `PUT /api/channels/{id}/planned-product` 调整货道计划商品 |
 | 批次全链路追溯 | `batch_ledger` 逐笔记录补货入/售卖出/下架出/报损出/盘盈盘亏/退款回库/结算；`/api/analytics/batches/{batchNo}/trace` |
@@ -29,6 +32,9 @@
 - **商品批次**：`IN_STOCK → SOLD_OUT | REMOVED → SETTLED`
 - **下架单**：`PENDING → EXECUTED`；去向 `SCRAP`（报废，产生报损）/ `RETURN_SUPPLIER`（退供，不产生报损）
 - **结算单**：`DRAFT → CONFIRMED → PAID`，同供应商同周期不可重复生成
+- **差异核查单**：`OPEN（建单即冻结相关批次）→ PARTIALLY_CONFIRMED（部分定责/有挂起，仍冻结）→ RESOLVED（全部定责，解冻）`；结单后接回补证/复盘/跨班次补货/已结算订单自动转 `REOPENED`，改判后重新闭环
+- **差异分摊行**：`PENDING → CONFIRMED（记账+责任分流）/ SUSPENDED（挂起复核，批次继续冻结）`；改判时旧行 `VOIDED`（冲销库存/台账/报损/罚则），新行承接责任
+- **食品安全复核**：`PENDING（已隔离）→ DISPOSED（报废，TEMP_ABUSE 报损）/ RETURNED（复检合格解封）/ RECALLED（退供）`，可在差异定责完成前先行执行
 
 ## 二、一键启动（Docker Compose）
 
@@ -155,6 +161,87 @@ curl -s -u operator:cabinet123 -X POST http://localhost:8080/api/stocktakes/ST..
   -H 'Content-Type: application/json' -d '{"approve":true,"remark":"监控未见异常，按盘亏处理"}'
 ```
 
+> 简单、责任单一的小额差异可直接整单调整；一旦从差异行**立案核查**，该盘点单即被差异单接管，
+> 旧的整单调整接口会被拒绝，避免与拆分定责重复扣减。
+
+### 5.1) 盘点差异核查（系统 10 瓶、实盘 6 瓶，差 4 瓶）
+
+围绕四瓶差异查清是销售未扣减、补货少放、报损漏记、识别漏单还是温控损耗：
+
+```bash
+# ① 盘点录入实盘后，从差异行立案核查（自动冻结该批次结算/对账，其他商品不受影响）
+curl -s -u operator:cabinet123 -X POST http://localhost:8080/api/discrepancies/from-stocktake \
+  -H 'Content-Type: application/json' \
+  -d '{"stocktakeNo":"ST...","channelCode":"A02","batchNo":"B-MILK-1001"}'
+# 返回 DC... 差异单，settlementFrozen=true
+
+# ② 证据回放：补货前后库存(台账)、补货照片、销售订单、开门记录、识别事件(视频片段)、
+#    报损、下架单、温控曲线，以及按时间线归纳的候选原因
+curl -s -u operator:cabinet123 http://localhost:8080/api/discrepancies/DC.../evidence
+
+# ③ 按"发生时间+证据"逐瓶拆分定责；同一时段多种可能不许整额挂一个责任方。
+#    原因：SALE_NOT_DEDUCTED / RESTOCK_SHORTAGE / LOSS_MISSED / RECOGNITION_MISSED /
+#          TEMP_DAMAGE / OVERCOUNT / UNCONFIRMED(挂起复核)
+#    责任：REPLENISHER / SUPPLIER / PLATFORM / FOOD_SAFETY / NONE
+curl -s -u operator:cabinet123 -X POST http://localhost:8080/api/discrepancies/DC.../allocations \
+  -H 'Content-Type: application/json' -d '{
+    "lines":[
+      {"cause":"RECOGNITION_MISSED","liability":"PLATFORM","qty":1,
+       "occurredAt":"2026-10-06T13:05:00","refSessionNo":"S-1001","remark":"称重少260g无订单"},
+      {"cause":"RESTOCK_SHORTAGE","liability":"REPLENISHER","qty":2,
+       "occurredAt":"2026-10-06T08:10:00","refRestockNo":"RS...","remark":"照片比对少放2瓶"},
+      {"cause":"UNCONFIRMED","liability":"NONE","qty":1,
+       "occurredAt":"2026-10-06T16:00:00","remark":"证据不足，挂起复核"}
+    ]}'
+# → 状态 PARTIALLY_CONFIRMED，已确认3瓶即时扣账，挂起1瓶不动账、批次继续冻结
+
+# ④ 温控异常商品"先行"食品安全处置（无需等定责结束；建单时已自动隔离）
+curl -s -u operator:cabinet123 -X POST http://localhost:8080/api/discrepancies/DC.../food-safety \
+  -H 'Content-Type: application/json' \
+  -d '{"qty":1,"result":"DISPOSED","disposition":"SCRAP","remark":"感官变质销毁"}'
+# result: DISPOSED(报废,TEMP_ABUSE报损) / RETURNED(复检合格解封) / RECALLED(退供)
+
+# ⑤ 挂起的 1 瓶经监控复核为报损漏记 → 改判（先查到该挂起分摊行 id）
+curl -s -u operator:cabinet123 http://localhost:8080/api/discrepancies/DC.../allocations
+curl -s -u operator:cabinet123 -X POST \
+  http://localhost:8080/api/discrepancies/DC.../allocations/{allocationId}/rejudge \
+  -H 'Content-Type: application/json' -d '{"line":{
+      "cause":"LOSS_MISSED","liability":"NONE","qty":1,
+      "occurredAt":"2026-10-06T15:30:00"},"remark":"监控确认破损已丢弃"}'
+# 全部定责 → RESOLVED，批次结算/对账自动解冻
+
+# ⑥ 责任分流下游
+curl -s -u finance:cabinet123 http://localhost:8080/api/discrepancies/replenisher-penalties  # 补货员扣罚
+curl -s -u finance:cabinet123 -X POST \
+  http://localhost:8080/api/discrepancies/replenisher-penalties/{userId}/settle            # 补货员结算扣款
+curl -s -u operator:cabinet123 http://localhost:8080/api/discrepancies/recognition-samples # 算法漏单样本
+curl -s -u operator:cabinet123 -X POST \
+  http://localhost:8080/api/discrepancies/recognition-samples/{sampleId}/review \
+  -H 'Content-Type: application/json' -d '{"note":"已采纳回流训练集"}'
+```
+
+冻结效果：`POST /api/finance/settlements/generate` 时被冻结批次整批跳过，结算单
+`heldBatchCount/heldBatchNos` 记录被冻结批次；差异定责产生的供应商对账调整
+（`supplier_recon_adjustment`）在下一期结算明细 `reconAmount` 中核销，确认时置已核销。
+
+**事后接回（结单也会自动重开、重新冻结）**：
+
+```bash
+# 补传补货/上架照片
+curl -s -u replenisher:cabinet123 -X POST http://localhost:8080/api/discrepancies/DC.../follow-ups \
+  -H 'Content-Type: application/json' -d '{"type":"PHOTO_SUPPLEMENT","refNo":"RS...",
+    "photoUrls":"https://example.io/photos/proof.jpg","qtyChange":0,"remark":"供应商出库满载"}'
+# 重复盘点（新实盘改变差异数量时，自动冲销原判定、回滚库存与罚则，单据重开）
+curl -s -u operator:cabinet123 -X POST http://localhost:8080/api/discrepancies/DC.../recount \
+  -H 'Content-Type: application/json' -d '{"countedQty":5,"remark":"复盘清点5瓶"}'
+# 已结算订单事后发现相关
+curl -s -u operator:cabinet123 -X POST http://localhost:8080/api/discrepancies/DC.../follow-ups \
+  -H 'Content-Type: application/json' -d '{"type":"SETTLED_ORDER","refNo":"OD...","qtyChange":1,
+    "remark":"已结算订单复核发现销售未扣减"}'
+# 跨班次补货：补货单 complete 时会自动以 RESTOCK_CROSS_SHIFT 接回该批次历史差异单
+curl -s http://localhost:8080/api/discrepancies/DC.../follow-ups   # 查看全部接回与数量变化
+```
+
 ### 6) 投诉 → 证据回放 → 退款
 
 ```bash
@@ -203,6 +290,7 @@ mvn test
 
 - `RecognitionFusionTest`：拿起放回抵消、多源一致融合、多源冲突降级、称重交叉校验；
 - `BusinessFlowIntegrationTest`（H2）：补货上架/放错货道/过期禁上架、关门结算 FEFO、拿起放回取消、存疑复核、温控锁定隔离、临期下架报损、盘点盘亏、投诉退款（收回/未收回）、供应商结算口径。
+- `DiscrepancyIntegrationTest`（H2）：四瓶差异按证据拆分（识别漏单/补货少放/挂起）、挂起维持批次冻结且其他商品正常结算、挂起改判结单、温控食安先行处置（报废后其余自动解封）、补传照片接回后改判责任转移与对账核销（评分回补、报损作废）、重复盘点冲销回滚、已结算订单接回再改判。
 
 ## 七、主要数据模型
 
@@ -215,6 +303,10 @@ door_session 1—N recognition_event（重量/视觉/RFID，含视频片段）
 door_session 1—1 order_record 1—N order_item（精确到批次）
 removal_order 1—N removal_item；执行后按去向写 loss_record / 回退供应商
 stocktake_order 1—N stocktake_item（系统数/实盘数/差异/调整标记）
-complaint N—1 door_session；settlement_batch 1—N settlement_item（批次级对账）
+discrepancy_order 1—N discrepancy_allocation（按时间+证据拆分的每笔数量/原因/责任/状态，改判 VOIDED 留痕）
+discrepancy_order 1—N discrepancy_followup（补传照片/重复盘点/跨班次补货/已结算订单 接回）
+food_safety_review（温控异常先行隔离/报废/复检/召回）；replenisher_penalty（补货员扣罚+评分/改判撤销）
+recognition_sample（识别漏单/未扣减样本回流算法团队）；supplier_recon_adjustment（供应商账单对账调整/核销/反向）
+complaint N—1 door_session；settlement_batch 1—N settlement_item（批次级对账，含 reconAmount；被冻结批次记录于 heldBatch*）
 temp_log / alert 支撑温控与运营处置
 ```

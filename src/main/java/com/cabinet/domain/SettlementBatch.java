@@ -53,5 +53,13 @@ public class SettlementBatch extends BaseEntity {
     private LocalDateTime confirmedAt;
     private LocalDateTime paidAt;
 
+    /** 生成结算时因差异核查未结而被冻结、未纳入本期结算的批次数 */
+    @Builder.Default
+    private Integer heldBatchCount = 0;
+
+    /** 被冻结批次号（逗号分隔，仅展示/审计用） */
+    @Column(length = 2000)
+    private String heldBatchNos;
+
     private String remark;
 }
